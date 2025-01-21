@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Ensure the script exits on any error
-set -e
+# Set your AWS username here
+AWS_USERNAME="your-aws-username"
 
 # Function to check AWS credentials
 check_aws_login() {
@@ -14,22 +14,54 @@ check_aws_login() {
 # Function to list unique simplified cluster names and their overall status
 list_clusters() {
     echo "Fetching simplified cluster names and their overall status..."
-    aws ec2 describe-instances \
-        --filters "Name=tag:user,Values=sam.goldberg" \
+
+    # Define color codes
+    GREEN=$(tput setaf 2)  # Green for "running"
+    RED=$(tput setaf 1)    # Red for "stopped"
+    YELLOW=$(tput setaf 3) # Yellow for "pending" or "starting"
+    RESET=$(tput sgr0)     # Reset to default color
+
+    # Fetch cluster data and format with color-coded statuses
+    data=$(aws ec2 describe-instances \
+        --filters "Name=tag:user,Values=${AWS_USERNAME}" \
         --query "Reservations[*].Instances[*].{ClusterName: Tags[?Key=='cluster_name'] | [0].Value, State: State.Name}" \
         --output json | jq -r '
         flatten |
         group_by(.ClusterName)[] |
-        {ClusterName: (.[0].ClusterName | select(.) | sub("^[^_]+_"; "")),
+        {ClusterName: (.[0].ClusterName | sub("^[^_]+_"; "")),
          State: (map(.State) | unique | join(","))} |
-        [.ClusterName, .State] | @tsv' | column -t
+        [.ClusterName, .State] | @tsv' | while IFS=$'\t' read -r cluster state; do
+            # Apply color coding based on state
+            if [[ $state == "running" ]]; then
+                state="${GREEN}${state}${RESET}"
+            elif [[ $state == "stopped" ]]; then
+                state="${RED}${state}${RESET}"
+            elif [[ $state == "pending" || $state == "starting" ]]; then
+                state="${YELLOW}${state}${RESET}"
+            fi
+            printf "%-20s %-10s\n" "$cluster" "$state"
+        done
+    )
+
+    # Print ASCII table header
+    printf "\n%s\n" "+----------------------+------------+"
+    printf "| %-20s | %-10s |\n" "Cluster Name" "State"
+    printf "%s\n" "+----------------------+------------+"
+
+    # Print formatted data
+    echo "$data" | while read -r line; do
+        printf "| %-20s |\n" "$line"
+    done
+
+    # Print ASCII table footer
+    printf "%s\n" "+----------------------+------------+"
 }
 
 # Function to get instance details by simplified cluster name
 get_instance_details_by_cluster() {
     local simple_name="$1"
     aws ec2 describe-instances \
-        --filters "Name=tag:user,Values=sam.goldberg" \
+        --filters "Name=tag:user,Values=${AWS_USERNAME}" \
         --query "Reservations[*].Instances[*].{InstanceId: InstanceId, State: State.Name, ClusterName: Tags[?Key=='cluster_name'] | [0].Value}" \
         --output json \
     | jq -r --arg cluster "_${simple_name}" '
@@ -41,15 +73,6 @@ get_instance_details_by_cluster() {
     | column -t
 }
 
-# Function to get instance IDs by simplified cluster name
-get_instance_ids_by_cluster() {
-    local simple_name="$1"
-    aws ec2 describe-instances \
-        --filters "Name=tag:user,Values=sam.goldberg" \
-        --query "Reservations[*].Instances[?Tags[?Key=='cluster_name' && contains(Value, '_${simple_name}')]].InstanceId" \
-        --output text
-}
-
 # Function to perform actions (status, start, stop, restart)
 perform_action() {
     local action="$1"
@@ -58,7 +81,7 @@ perform_action() {
     # Get instance IDs by flattening and filtering
     instance_ids=$(
         aws ec2 describe-instances \
-            --filters "Name=tag:user,Values=sam.goldberg" \
+            --filters "Name=tag:user,Values=${AWS_USERNAME}" \
             --query "Reservations[*].Instances[*].{InstanceId: InstanceId, ClusterName: Tags[?Key=='cluster_name'] | [0].Value}" \
             --output json \
         | jq -r --arg cluster "_${simple_name}" '
@@ -77,12 +100,11 @@ perform_action() {
     case "$action" in
         status)
             echo "Fetching status of instances in cluster: $simple_name..."
-            # calls the function above
             details=$(get_instance_details_by_cluster "$simple_name")
             if [[ -z "$details" ]]; then
-              echo "No instances found for cluster: $simple_name"
+                echo "No instances found for cluster: $simple_name"
             else
-              echo "$details"
+                echo "$details"
             fi
             ;;
         start)
@@ -140,4 +162,3 @@ main() {
 
 # Run the main function with all script arguments
 main "$@"
-
