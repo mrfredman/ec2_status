@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Set your AWS username here
-AWS_USERNAME="your-aws-username"
+AWS_USERNAME="username"
 
 # Function to check AWS credentials
 check_aws_login() {
@@ -21,8 +21,13 @@ list_clusters() {
     YELLOW=$(tput setaf 3) # Yellow for "pending" or "starting"
     RESET=$(tput sgr0)     # Reset to default color
 
-    # Fetch cluster data and format with color-coded statuses
-    data=$(aws ec2 describe-instances \
+    # Print ASCII table header
+    printf "%s\n" "+----------------------+------------+"
+    printf "| %-20s | %-10s |\n" "Cluster Name" "State"
+    printf "%s\n" "+----------------------+------------+"
+
+    # Fetch and process cluster data
+    aws ec2 describe-instances \
         --filters "Name=tag:user,Values=${AWS_USERNAME}" \
         --query "Reservations[*].Instances[*].{ClusterName: Tags[?Key=='cluster_name'] | [0].Value, State: State.Name}" \
         --output json | jq -r '
@@ -31,6 +36,11 @@ list_clusters() {
         {ClusterName: (.[0].ClusterName | sub("^[^_]+_"; "")),
          State: (map(.State) | unique | join(","))} |
         [.ClusterName, .State] | @tsv' | while IFS=$'\t' read -r cluster state; do
+            # Handle empty or null data
+            if [[ -z "$cluster" || -z "$state" ]]; then
+                continue
+            fi
+
             # Apply color coding based on state
             if [[ $state == "running" ]]; then
                 state="${GREEN}${state}${RESET}"
@@ -39,19 +49,10 @@ list_clusters() {
             elif [[ $state == "pending" || $state == "starting" ]]; then
                 state="${YELLOW}${state}${RESET}"
             fi
-            printf "%-20s %-10s\n" "$cluster" "$state"
+
+            # Print the row
+            printf "| %-20s | %-21s |\n" "$cluster" "$state"
         done
-    )
-
-    # Print ASCII table header
-    printf "\n%s\n" "+----------------------+------------+"
-    printf "| %-20s | %-10s |\n" "Cluster Name" "State"
-    printf "%s\n" "+----------------------+------------+"
-
-    # Print formatted data
-    echo "$data" | while read -r line; do
-        printf "| %-20s |\n" "$line"
-    done
 
     # Print ASCII table footer
     printf "%s\n" "+----------------------+------------+"
